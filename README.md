@@ -41,7 +41,7 @@ You only do the setup once. After that, one command downloads a song, album, or 
 2. Download this project and install it:
 
     ```bash
-    git clone https://github.com/M1Lucken/spotify-downloader.git
+    git clone -b reliable-local https://github.com/M1Lucken/spotify-downloader.git
     cd spotify-downloader
     python3 -m pip install -e '.[default]'
     ```
@@ -72,6 +72,8 @@ You only do the setup once. After that, one command downloads a song, album, or 
     ```
 
     A page opens on this computer only. Paste the link, pick the folder, and press Download. Quit closes the page, and the page also closes itself 10 minutes after a download. The red button in the corner does the same thing.
+
+    ![spotdl easy](docs/images/EASY_UI.png)
 
 If YouTube says you must sign in, export cookies once and save the file as `~/.spotdl/cookies.txt`. The next command picks it up. Use a throwaway Google account if you can. Details are in [docs/local-setup.md](docs/local-setup.md).
 

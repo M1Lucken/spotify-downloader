@@ -114,6 +114,8 @@ spotdl --output ~/Music/songs "https://open.spotify.com/album/xxxxxxxx?si=xxxxxx
 
 Or open a window with `spotdl easy`. The first download starts a small helper by itself. The helper closes about 5 minutes after spotdl exits, and the page has Quit and Stop helper buttons. The page also closes itself 10 minutes after a download. Run the same command again to finish anything that stopped. See [Local setup](local-setup.md).
 
+![spotdl easy](images/EASY_UI.png)
+
 ## Usage
 
 Using SpotDL without options:
