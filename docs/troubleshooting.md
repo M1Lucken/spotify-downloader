@@ -53,23 +53,27 @@ As common issues or questions are encountered solutions will be added to this gu
 
 ??? "AudioProviderError: YT-DLP download error"
 
-    This can happen when Deno is not installed. spotDL uses yt-dlp for YouTube downloads, and some
-    videos require Deno to download successfully, including videos marked as "made for kids".
+    The message now includes the underlying yt-dlp error. A common cause is YouTube signature
+    solving with no JavaScript runtime: only storyboard images are offered, and the download fails.
 
     ### Error Message
 
-    `AudioProviderError: YT-DLP download error`
+    `AudioProviderError: YT-DLP download error - <url>: ...`
 
     ### Solution
 
-    Install Deno for spotDL:
+    Install Node.js 20 or newer and leave `node` on PATH. spotdl passes
+    `--js-runtimes node` automatically. Deno also works (`spotdl --download-deno`) when Node is
+    not installed.
+
+    YouTube also wants a PO token for many clients. spotdl starts the bgutil server on
+    `127.0.0.1:4416` when that port is closed. Install the plugin for the same Python:
 
     ```bash
-    spotdl --download-deno
+    python -m pip install 'bgutil-ytdlp-pot-provider==1.3.1'
     ```
 
-    If you prefer a system-wide Deno install, follow the
-    [official Deno installation guide](https://docs.deno.com/runtime/getting_started/installation/).
+    See [Local setup](local-setup.md).
 
 ??? "HTTP Error 404"
 

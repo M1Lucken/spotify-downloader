@@ -12,15 +12,26 @@ from yt_dlp import YoutubeDL
 from spotdl.types.result import Result
 from spotdl.types.song import Song
 from spotdl.utils.config import get_temp_path
-from spotdl.utils.deno import get_local_deno_yt_dlp_options, warn_if_deno_missing
 from spotdl.utils.formatter import (
     args_to_ytdlp_options,
     create_search_query,
     create_song_title,
 )
+from spotdl.utils.js_runtime import (
+    MISSING_JS_RUNTIME_HINT,
+    js_runtime_options,
+    user_specified_js_runtime,
+)
 from spotdl.utils.matching import get_best_matches, order_results
 
-__all__ = ["AudioProviderError", "AudioProvider", "ISRC_REGEX", "YTDLLogger"]
+__all__ = [
+    "AudioProviderError",
+    "AudioProvider",
+    "ISRC_REGEX",
+    "YTDLLogger",
+    "exception_text",
+    "format_yt_dlp_error",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +76,55 @@ class YTDLLogger:
 
 
 ISRC_REGEX = re.compile(r"^[A-Z]{2}-?\w{3}-?\d{2}-?\d{5}$")
+
+
+def exception_text(exception: BaseException) -> str:
+    """
+    Join an exception with its `__cause__` chain, skipping empty duplicates.
+
+    ### Arguments
+    - exception: The outermost exception.
+
+    ### Returns
+    - A single human-readable message.
+    """
+
+    parts: List[str] = []
+    seen: set[int] = set()
+    current: Optional[BaseException] = exception
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        text = str(current).strip()
+        if text and not any(text in part or part in text for part in parts):
+            parts.append(text)
+        current = current.__cause__
+
+    return ": ".join(parts) if parts else exception.__class__.__name__
+
+
+def format_yt_dlp_error(
+    url: str, exception: BaseException, runtime_missing: bool
+) -> str:
+    """
+    Build an AudioProviderError message that includes the yt-dlp cause.
+
+    ### Arguments
+    - url: URL yt-dlp was asked to fetch.
+    - exception: Exception raised by yt-dlp.
+    - runtime_missing: True when Node and Deno are both unavailable.
+
+    ### Returns
+    - Error message.
+    """
+
+    detail = exception_text(exception)
+    message = f"YT-DLP download error - {url}"
+    if detail and detail not in message:
+        message = f"{message}: {detail}"
+    if runtime_missing:
+        message = f"{message} {MISSING_JS_RUNTIME_HINT}"
+
+    return message
 
 
 class AudioProvider:
@@ -119,7 +179,11 @@ class AudioProvider:
             "extractor_args": {},
         }
 
-        yt_dlp_options.update(get_local_deno_yt_dlp_options())
+        runtime_defaults = js_runtime_options(yt_dlp_args)
+        self.js_runtime_missing = (
+            not runtime_defaults and not user_specified_js_runtime(yt_dlp_args)
+        )
+        yt_dlp_options.update(runtime_defaults)
 
         if yt_dlp_args:
             yt_dlp_options = args_to_ytdlp_options(
@@ -402,11 +466,10 @@ class AudioProvider:
             if data:
                 return data
         except Exception as exception:
-            if download:
-                warn_if_deno_missing()
-
-            logger.debug(exception)
-            raise AudioProviderError(f"YT-DLP download error - {url}") from exception
+            logger.debug("yt-dlp failed for %s", url, exc_info=exception)
+            raise AudioProviderError(
+                format_yt_dlp_error(url, exception, self.js_runtime_missing)
+            ) from exception
 
         raise AudioProviderError(f"No metadata found for the provided url {url}")
 

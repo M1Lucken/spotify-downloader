@@ -77,6 +77,13 @@ def generate_config():
         json.dump(DEFAULT_CONFIG, config_file, indent=4)
 
     print(f"Config file generated at {config_path}")
+    print(
+        "Edit client_id and client_secret before downloading. "
+        "The placeholder client id is the old shared Spotify app, and spotdl "
+        "refuses to start while it is set. Create an app at "
+        "https://developer.spotify.com/dashboard with redirect URI "
+        "http://127.0.0.1:9900/. See docs/local-setup.md."
+    )
 
     return None
 

@@ -9,6 +9,7 @@ site_dir: "site"
 nav:
 - Home: index.md
 - Installation: installation.md
+- Local setup: local-setup.md
 - Usage:
   - Usage examples: usage.md
   - Troubleshooting: troubleshooting.md

@@ -26,6 +26,7 @@ from spotdl.providers.audio import (
     YouTube,
     YouTubeMusic,
 )
+from spotdl.providers.audio.base import exception_text
 from spotdl.providers.lyrics import AzLyrics, Genius, LyricsProvider, MusixMatch, Synced
 from spotdl.types.options import DownloaderOptionalOptions, DownloaderOptions
 from spotdl.types.song import Song
@@ -214,6 +215,11 @@ class Downloader:
 
         # Initialize list of errors
         self.errors: List[str] = []
+        self.skipped: Dict[str, str] = {}
+        self.misses: Dict[str, str] = {}
+        self.failed: Dict[str, str] = {}
+        self.downloaded: Dict[str, str] = {}
+        self.status_callback = None
 
         # Initialize proxy server
         proxy = self.settings["proxy"]
@@ -237,6 +243,58 @@ class Downloader:
         logger.debug("Archive: %d urls", len(self.url_archive))
 
         logger.debug("Downloader initialized")
+
+    def note_song(self, song: Song, status: str, detail: str = "") -> None:
+        """
+        Record per-song status for the end-of-run summary and optional UI callback.
+
+        ### Arguments
+        - song: Song the event belongs to.
+        - status: One of downloading, skipped, done, no match, error.
+        - detail: Extra text for the log or UI.
+        """
+
+        key = song.url or song.display_name
+        if status == "skipped":
+            self.skipped[key] = song.display_name
+            self.failed.pop(key, None)
+        elif status == "done":
+            self.downloaded[key] = song.display_name
+            self.failed.pop(key, None)
+            self.misses.pop(key, None)
+        elif status == "no match":
+            self.misses[key] = f"{song.display_name}: {detail}"
+            self.failed.pop(key, None)
+            self.skipped.pop(key, None)
+        elif status == "error":
+            self.failed[key] = f"{song.display_name}: {detail}"
+            self.skipped.pop(key, None)
+            self.downloaded.pop(key, None)
+
+        callback = self.status_callback
+        if callback is None:
+            return
+
+        try:
+            callback(song.display_name, status, detail)
+        except Exception:
+            logger.debug("Status callback failed", exc_info=True)
+
+    @staticmethod
+    def _is_lookup_error(exception: BaseException) -> bool:
+        """
+        Return True when an exception chain is an expected search miss.
+        """
+
+        seen: set[int] = set()
+        current: Optional[BaseException] = exception
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            if isinstance(current, LookupError):
+                return True
+            current = current.__cause__
+
+        return False
 
     def download_song(self, song: Song) -> Tuple[Song, Optional[Path]]:
         """
@@ -297,20 +355,25 @@ class Downloader:
         # Call all task asynchronously, and wait until all are finished
         results = list(self.loop.run_until_complete(asyncio.gather(*tasks)))
 
-        # Print errors
+        # Print errors. Misses are expected and are not failures.
         if self.settings["print_errors"]:
-            for error in self.errors:
+            for error in self.failed.values():
                 logger.error(error)
+            for miss in self.misses.values():
+                logger.warning("No match: %s", miss)
 
         if self.settings["save_errors"]:
             with open(
                 self.settings["save_errors"], "a", encoding="utf-8"
             ) as error_file:
-                if len(self.errors) > 0:
+                saved = list(self.failed.values()) + [
+                    f"No match: {miss}" for miss in self.misses.values()
+                ]
+                if len(saved) > 0:
                     error_file.write(
                         f"{datetime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}\n"
                     )
-                for error in self.errors:
+                for error in saved:
                     error_file.write(f"{error}\n")
 
             logger.info("Saved errors to %s", self.settings["save_errors"])
@@ -470,7 +533,9 @@ class Downloader:
             song.url or song.song_id
         ):
             logger.error("Song is missing required fields: %s", song.display_name)
-            self.errors.append(f"Song is missing required fields: {song.display_name}")
+            detail = f"Song is missing required fields: {song.display_name}"
+            self.errors.append(detail)
+            self.note_song(song, "error", detail)
             return song, None
 
         # Reinitialize the song object if it's missing metadata
@@ -495,7 +560,9 @@ class Downloader:
 
             except Exception as e:
                 logger.error("Error occurred while reinitializing song: %s", e)
-                self.errors.append(f"Error occurred while reinitializing song: {e}")
+                detail = f"Error occurred while reinitializing song: {e}"
+                self.errors.append(detail)
+                self.note_song(song, "error", detail)
                 return song, None
 
         # Create the output file path
@@ -509,6 +576,7 @@ class Downloader:
 
         if song.explicit is True and self.settings["skip_explicit"] is True:
             logger.info("Skipping explicit song: %s", song.display_name)
+            self.note_song(song, "skipped", "explicit")
             return song, None
 
         # Initialize the progress tracker
@@ -558,6 +626,7 @@ class Downloader:
                     song.display_name,
                     "",
                 )
+                self.note_song(song, "skipped", "skip file found")
 
                 return song, output_file if output_file.exists() else None
 
@@ -569,6 +638,7 @@ class Downloader:
                 )
 
                 display_progress_tracker.notify_download_skip()
+                self.note_song(song, "skipped", "file already exists")
                 return song, output_file
 
             # Don't skip if the file exists and overwrite is set to force
@@ -714,6 +784,7 @@ class Downloader:
             display_progress_tracker.notify_getting_meta()
 
             logger.debug("Downloading %s using %s", song.display_name, download_url)
+            self.note_song(song, "downloading", download_url or "")
             download_info = await loop.run_in_executor(
                 None,
                 lambda: audio_downloader.get_download_metadata(
@@ -888,6 +959,7 @@ class Downloader:
             self.known_songs.get(song.url, []).append(output_file)
 
             logger.info('Downloaded "%s": %s', song.display_name, song.download_url)
+            self.note_song(song, "done", str(output_file))
 
             return song, output_file
         except (Exception, UnicodeEncodeError) as exception:
@@ -902,7 +974,11 @@ class Downloader:
             display_progress_tracker.notify_error(
                 traceback.format_exc(), exception, True
             )
-            self.errors.append(
-                f"{song.url} - {exception.__class__.__name__}: {exception}"
-            )
+            detail = exception_text(exception)
+            self.errors.append(f"{song.url} - {exception.__class__.__name__}: {detail}")
+            if self._is_lookup_error(exception):
+                logger.info("No match for %s", song.display_name)
+                self.note_song(song, "no match", detail)
+            else:
+                self.note_song(song, "error", detail)
             return song, None

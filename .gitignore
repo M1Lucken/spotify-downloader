@@ -145,3 +145,10 @@ temp/
 # VS Code
 .vscode
 *.txt
+
+# Local YouTube session and PO-token logs. Never commit these.
+cookies.txt
+youtube_cookies.txt
+.spotipy
+pot-server.log
+local-setup/**/node_modules

@@ -264,6 +264,11 @@ def create_settings(
     )
     web_options = WebOptions(**create_settings_type(arguments, config, WEB_OPTIONS))  # type: ignore
 
+    if not downloader_options.get("cookie_file"):
+        default_cookie = get_spotdl_path() / "cookies.txt"
+        if default_cookie.is_file():
+            downloader_options["cookie_file"] = str(default_cookie)
+
     return spotify_options, downloader_options, web_options
 
 

@@ -27,6 +27,7 @@ __all__ = [
     "QueryError",
     "get_search_results",
     "parse_query",
+    "sanitize_spotify_url",
     "get_simple_songs",
     "reinit_song",
     "get_song_from_file_metadata",
@@ -39,6 +40,29 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 client = None  # pylint: disable=invalid-name
+
+
+def sanitize_spotify_url(url: str) -> str:
+    """
+    Drop the tracking query and locale prefix from a Spotify share link.
+
+    `https://open.spotify.com/album/ID?si=abc` becomes
+    `https://open.spotify.com/album/ID`. Other links are left unchanged.
+
+    ### Arguments
+    - url: A query string from the command line or the easy page.
+
+    ### Returns
+    - The cleaned URL.
+    """
+
+    cleaned = url.strip()
+    if "open.spotify.com" not in cleaned and "spotify.link" not in cleaned:
+        return cleaned
+
+    cleaned = cleaned.split("#", 1)[0].split("?", 1)[0]
+    cleaned = re.sub(r"/intl-\w+/", "/", cleaned)
+    return cleaned
 
 
 def get_ytm_client() -> YTMusic:
@@ -139,8 +163,8 @@ def get_simple_songs(
     for request in query:
         logger.info("Processing query: %s", request)
 
-        # Remove /intl-xxx/ from Spotify URLs with regex
-        request = re.sub(r"\/intl-\w+\/", "/", request)
+        # Share links look like .../album/ID?si=... . The text after ? is not the id.
+        request = sanitize_spotify_url(request)
 
         if (
             (  # pylint: disable=too-many-boolean-expressions

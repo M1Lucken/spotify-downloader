@@ -102,6 +102,20 @@ follow these instructions
 - OSX - `brew install ffmpeg`
 - Linux - `sudo apt install ffmpeg` or use your distro's package manager
 
+## Start here
+
+Setup is once. After your Spotify app keys are in the settings file, one command downloads an album or playlist. Text after `?` on a copied Spotify link is ignored.
+
+On a Mac: `brew install python node ffmpeg`, then from this folder `python3 -m pip install -e '.[default]'`. Run `spotdl --generate-config` and paste your client id and secret into the file it prints. Redirect URI: `http://127.0.0.1:9900/`.
+
+```bash
+spotdl --output ~/Music/songs "https://open.spotify.com/album/xxxxxxxx?si=xxxxxxxx"
+```
+
+Or open a window with `spotdl easy`. The first download starts a small helper by itself. The helper closes about 5 minutes after spotdl exits, and the page has Quit and Stop helper buttons. The page also closes itself 10 minutes after a download. Run the same command again to finish anything that stopped. See [Local setup](local-setup.md).
+
+![spotdl easy](images/EASY_UI.png)
+
 ## Usage
 
 Using SpotDL without options:
