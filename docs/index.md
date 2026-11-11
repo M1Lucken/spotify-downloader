@@ -102,6 +102,16 @@ follow these instructions
 - OSX - `brew install ffmpeg`
 - Linux - `sudo apt install ffmpeg` or use your distro's package manager
 
+## Reliable local downloads
+
+Large playlists need your own Spotify app, Node.js 20 or newer, and a YouTube cookie file.
+spotdl passes `--js-runtimes node` when `node` is on PATH, skips files that are already on disk,
+and starts the PO-token server on `127.0.0.1:4416` if it is not already running.
+
+`spotdl easy` opens a one-page local site for the same download path.
+
+Follow [Local setup](local-setup.md) from a new checkout through the first playlist.
+
 ## Usage
 
 Using SpotDL without options:

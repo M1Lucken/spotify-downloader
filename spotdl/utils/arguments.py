@@ -16,7 +16,7 @@ from spotdl.utils.logging import NAME_TO_LEVEL
 
 __all__ = ["OPERATIONS", "SmartFormatter", "parse_arguments"]
 
-OPERATIONS = ["download", "save", "web", "sync", "meta", "url"]
+OPERATIONS = ["download", "save", "web", "easy", "sync", "meta", "url"]
 
 
 class SmartFormatter(argparse.HelpFormatter):
@@ -56,8 +56,15 @@ def parse_main_options(parser: _ArgumentGroup):
         help=(
             "N|The operation to perform.\n"
             "download: Download the songs to the disk and embed metadata.\n"
+            "    Re-run the same command to resume a playlist that stopped early.\n"
+            "    The default --overwrite skip leaves files already on disk, and the\n"
+            "    log lists failed tracks separately from skipped ones.\n"
+            "    Use --threads 1 for long playlists.\n"
             "save: Saves the songs metadata to a file for further use.\n"
             "web: Starts a web interface to simplify the download process.\n"
+            "easy: Open a one-page local site on localhost to download without\n"
+            "    the terminal. Same credentials, cookies, and yt-dlp settings as\n"
+            "    download.\n"
             "sync: Removes songs that are no longer present, downloads new ones\n"
             "meta: Update your audio files with metadata\n"
             "url: Get the download URL for songs\n\n"
@@ -88,20 +95,20 @@ def parse_main_options(parser: _ArgumentGroup):
     )
 
     try:
-        is_web = sys.argv[1] == "web"
+        command = sys.argv[1]
     except IndexError:
-        is_web = False
+        command = ""
 
     is_frozen = getattr(sys, "frozen", False)
+    interactive = command in {"web", "easy"}
 
     # If the program is frozen, we and user didn't pass any arguments,
-    # or if the user is using the web interface, we don't need to parse
-    # the query
-    if (is_frozen and len(sys.argv) < 2) or (len(sys.argv) > 1 and is_web):
-        # If we are running the web interface
-        # or we are in the frozen env and not running web interface
+    # or if the user is using a local UI, we don't need to parse the query
+    if (is_frozen and len(sys.argv) < 2) or (len(sys.argv) > 1 and interactive):
+        # If we are running a local UI
+        # or we are in the frozen env and not running a UI
         # don't remove the operation from the arg parser
-        if not is_web or (is_frozen and not is_web):
+        if not interactive or (is_frozen and not interactive):
             parser._remove_action(operation)  # pylint: disable=protected-access
 
         parser._remove_action(query)  # pylint: disable=protected-access
@@ -408,6 +415,8 @@ def parse_output_options(parser: _ArgumentGroup):
         choices={"force", "skip", "metadata"},
         help=(
             "How to handle existing/duplicate files. "
+            "skip (the default) leaves files already on disk, so re-running "
+            "spotdl download resumes a playlist after a crash or an early exit. "
             "(When combined with --scan-for-songs force will remove "
             "all duplicates, and metadata will only apply metadata to the "
             "latest song and will remove the rest. )"

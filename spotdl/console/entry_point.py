@@ -19,9 +19,11 @@ from spotdl.download.downloader import Downloader, DownloaderError
 from spotdl.utils.arguments import parse_arguments
 from spotdl.utils.config import create_settings
 from spotdl.utils.console import ACTIONS, generate_initial_config, is_executable
-from spotdl.utils.downloader import check_ytmusic_connection
+from spotdl.utils.credentials import ensure_personal_spotify_app
+from spotdl.utils.downloader import resolve_audio_providers
 from spotdl.utils.ffmpeg import FFmpegError, download_ffmpeg, is_ffmpeg_installed
 from spotdl.utils.logging import init_logging
+from spotdl.utils.po_token import ensure_po_token_server
 from spotdl.utils.spotify import SpotifyClient, SpotifyError, save_spotify_cache
 
 __all__ = ["console_entry_point", "OPERATIONS"]
@@ -82,6 +84,13 @@ def entry_point():
 
     init_logging(downloader_settings["log_level"], downloader_settings["log_format"])
 
+    if arguments.operation == "easy":
+        # Imported here so `spotdl --help` does not load the UI server.
+        from spotdl.console.easy import easy  # pylint: disable=import-outside-toplevel
+
+        easy(spotify_settings, downloader_settings, web_settings)
+        return None
+
     # If the application is frozen, we check for ffmpeg
     # if it's not present download it create config file
     if is_executable():
@@ -95,13 +104,18 @@ def entry_point():
             "or `spotdl --ffmpeg /path/to/ffmpeg` to specify the path to ffmpeg."
         )
 
-    # Check if we might be blocked by YouTube Music without stopping downloads.
-    if "youtube-music" in downloader_settings["audio_providers"]:
-        if not check_ytmusic_connection():
-            logger.warning(
-                "You might be blocked by YouTube Music. "
-                "If downloads fail, use a VPN, or use other audio providers. "
-            )
+    # A failed YouTube Music preflight must not abort the process.
+    downloader_settings["audio_providers"] = resolve_audio_providers(
+        list(downloader_settings["audio_providers"])
+    )
+
+    try:
+        ensure_personal_spotify_app(spotify_settings["client_id"])
+    except SpotifyError as exc:
+        logger.error("%s", exc)
+        sys.exit(1)
+
+    ensure_po_token_server()
 
     # Initialize spotify client
     SpotifyClient.init(**spotify_settings)

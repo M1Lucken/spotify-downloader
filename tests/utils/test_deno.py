@@ -144,9 +144,9 @@ def test_user_js_runtime_overrides_local_deno(monkeypatch, tmp_path):
     assert options["js_runtimes"] == {"deno": {"path": str(user_deno)}}
 
 
-def test_audio_provider_uses_local_deno_yt_dlp_options(monkeypatch, tmp_path):
+def test_audio_provider_prefers_node(monkeypatch, tmp_path):
     """
-    Test AudioProvider passes spotDL's local Deno options to yt-dlp.
+    Test AudioProvider passes Node to yt-dlp when Node >= 20 is on PATH.
     """
 
     from spotdl.providers.audio import base
@@ -159,20 +159,43 @@ def test_audio_provider_uses_local_deno_yt_dlp_options(monkeypatch, tmp_path):
 
     monkeypatch.setattr(base, "YoutubeDL", mock_youtube_dl)
     monkeypatch.setattr(base, "get_temp_path", lambda *_: tmp_path)
-    monkeypatch.setattr(
-        base,
-        "get_local_deno_yt_dlp_options",
-        lambda *_: {"js_runtimes": {"deno": {"path": "local-deno"}}},
-    )
+    monkeypatch.setattr("spotdl.utils.js_runtime.node_major_version", lambda: 20)
 
     base.AudioProvider()
 
-    assert captured_options["js_runtimes"] == {"deno": {"path": "local-deno"}}
+    assert captured_options["js_runtimes"] == {"node": {}}
 
 
-def test_piped_uses_local_deno_yt_dlp_options(monkeypatch, tmp_path):
+def test_audio_provider_uses_deno_when_node_is_missing(monkeypatch, tmp_path):
     """
-    Test Piped passes spotDL's local Deno options to yt-dlp.
+    Test AudioProvider uses Deno when Node is not installed.
+    """
+
+    from spotdl.providers.audio import base
+
+    deno = tmp_path / "deno"
+    deno.write_bytes(b"deno")
+    deno.chmod(0o755)
+    captured_options = {}
+
+    def mock_youtube_dl(options):
+        captured_options.update(options)
+        return object()
+
+    monkeypatch.setattr(base, "YoutubeDL", mock_youtube_dl)
+    monkeypatch.setattr(base, "get_temp_path", lambda *_: tmp_path)
+    monkeypatch.setattr("spotdl.utils.js_runtime.node_major_version", lambda: None)
+    monkeypatch.setattr("spotdl.utils.js_runtime.get_deno_path", lambda: deno)
+    monkeypatch.setattr("spotdl.utils.js_runtime.get_local_deno", lambda: deno)
+
+    base.AudioProvider()
+
+    assert captured_options["js_runtimes"]["deno"]["path"] == str(deno.resolve())
+
+
+def test_piped_uses_node_js_runtime(monkeypatch, tmp_path):
+    """
+    Test Piped passes the same JavaScript runtime as AudioProvider.
     """
 
     from spotdl.providers.audio import base
@@ -186,15 +209,11 @@ def test_piped_uses_local_deno_yt_dlp_options(monkeypatch, tmp_path):
 
     monkeypatch.setattr(base, "YoutubeDL", mock_youtube_dl)
     monkeypatch.setattr(base, "get_temp_path", lambda *_: tmp_path)
-    monkeypatch.setattr(
-        base,
-        "get_local_deno_yt_dlp_options",
-        lambda *_: {"js_runtimes": {"deno": {"path": "local-deno"}}},
-    )
+    monkeypatch.setattr("spotdl.utils.js_runtime.node_major_version", lambda: 20)
 
     piped.Piped()
 
-    assert captured_options["js_runtimes"] == {"deno": {"path": "local-deno"}}
+    assert captured_options["js_runtimes"] == {"node": {}}
 
 
 @pytest.mark.parametrize(

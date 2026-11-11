@@ -102,6 +102,16 @@ If using Deno only for spotDL, install Deno to your spotDL directory:
 If you want to install Deno system-wide instead, follow the
 [official Deno installation guide](https://docs.deno.com/runtime/getting_started/installation/).
 
+## Reliable local downloads
+
+Large playlists need your own Spotify app, Node.js 20 or newer, and a YouTube cookie file.
+spotdl passes `--js-runtimes node` when `node` is on PATH, skips files that are already on disk,
+and starts the PO-token server on `127.0.0.1:4416` if it is not already running.
+
+`spotdl easy` opens a one-page local site for the same download path.
+
+Follow [docs/local-setup.md](docs/local-setup.md) from a new checkout through the first playlist.
+
 ## Usage
 
 Using SpotDL without options:
@@ -135,6 +145,8 @@ For a list of all **options** use ```spotdl -h```
         `spotdl save [query] --save-file {filename}.spotdl`
 
 - `web`: Starts a web interface instead of using the command line. However, it has limited features and only supports downloading individual songs.
+
+- `easy`: Opens a one-page site on localhost for a song, playlist, album, or artist. It uses the same download path as `download` (your Spotify app, cookies, Node, and the PO-token server).
 
 - `url`: Get user-friendly URL for each song from the query.
     - Usage:
