@@ -102,15 +102,17 @@ follow these instructions
 - OSX - `brew install ffmpeg`
 - Linux - `sudo apt install ffmpeg` or use your distro's package manager
 
-## Reliable local downloads
+## Start here
 
-Large playlists need your own Spotify app, Node.js 20 or newer, and a YouTube cookie file.
-spotdl passes `--js-runtimes node` when `node` is on PATH, skips files that are already on disk,
-and starts the PO-token server on `127.0.0.1:4416` if it is not already running.
+Setup is once. After your Spotify app keys are in the settings file, one command downloads an album or playlist. Text after `?` on a copied Spotify link is ignored.
 
-`spotdl easy` opens a one-page local site for the same download path.
+On a Mac: `brew install python node ffmpeg`, then from this folder `python3 -m pip install -e '.[default]'`. Run `spotdl --generate-config` and paste your client id and secret into the file it prints. Redirect URI: `http://127.0.0.1:9900/`.
 
-Follow [Local setup](local-setup.md) from a new checkout through the first playlist.
+```bash
+spotdl --output ~/Music/songs "https://open.spotify.com/album/xxxxxxxx?si=xxxxxxxx"
+```
+
+Or open a window with `spotdl easy`. The first download starts a small helper by itself. The helper closes about 5 minutes after spotdl exits, and the page has Quit and Stop helper buttons. The page also closes itself 10 minutes after a download. Run the same command again to finish anything that stopped. See [Local setup](local-setup.md).
 
 ## Usage
 

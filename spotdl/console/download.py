@@ -7,18 +7,57 @@ import os
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 from typing import List
 
 from spotdl.download.downloader import Downloader
 from spotdl.types.song import Song
 from spotdl.utils.search import get_simple_songs
 
-__all__ = ["download", "download_songs_with_resume", "log_download_summary"]
+__all__ = [
+    "download",
+    "download_songs_with_resume",
+    "log_download_summary",
+    "normalize_output",
+]
 
 logger = logging.getLogger(__name__)
 
 MAX_RESUME_ROUNDS = 3
 _sleep_inhibited = False
+
+
+def normalize_output(output: str) -> str:
+    """
+    Treat a plain folder path as the directory songs are saved into.
+
+    A template such as `{artists} - {title}.{output-ext}` is left unchanged.
+    `~/Music/villager` becomes `~/Music/villager/{artists} - {title}.{output-ext}`.
+
+    ### Arguments
+    - output: The `--output` value.
+
+    ### Returns
+    - A file-name template.
+    """
+
+    if not output or "{" in output:
+        return output
+
+    path = Path(output).expanduser()
+    if path.suffix.lower() in {
+        ".mp3",
+        ".m4a",
+        ".flac",
+        ".opus",
+        ".ogg",
+        ".wav",
+        ".lrc",
+    }:
+        return output
+
+    path.mkdir(parents=True, exist_ok=True)
+    return str(path / "{artists} - {title}.{output-ext}")
 
 
 def prevent_sleep() -> None:
@@ -150,6 +189,7 @@ def download(
     """
 
     prevent_sleep()
+    downloader.settings["output"] = normalize_output(downloader.settings["output"])
 
     # Parse the query
     songs = get_simple_songs(

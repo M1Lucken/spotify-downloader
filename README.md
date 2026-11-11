@@ -26,6 +26,55 @@ ______________________________________________________________________
 **[Read the documentation on ReadTheDocs!](https://spotdl.readthedocs.io)**
 ______________________________________________________________________
 
+## Start here
+
+You only do the setup once. After that, one command downloads a song, album, or playlist. A link copied from Spotify includes `?si=...` at the end. Leave it. spotdl removes it.
+
+1. Install three programs. On a Mac, paste this into Terminal:
+
+    ```bash
+    brew install python node ffmpeg
+    ```
+
+    You need Python 3.11 or newer, Node 20 or newer, and ffmpeg. On Windows, install each from its website and tick "Add to PATH".
+
+2. Download this project and install it:
+
+    ```bash
+    git clone https://github.com/M1Lucken/spotify-downloader.git
+    cd spotify-downloader
+    python3 -m pip install -e '.[default]'
+    ```
+
+    That installs spotdl and the YouTube downloader (`yt-dlp`) it uses.
+
+3. Get a free Spotify key, so the app can look up song names.
+
+    - Open <https://developer.spotify.com/dashboard> and create an app.
+    - Under redirect URIs, add exactly `http://127.0.0.1:9900/`
+    - In Terminal, run `spotdl --generate-config`
+    - Open the settings file it prints (`~/.spotdl/config.json` on a Mac).
+    - Replace `client_id` and `client_secret` with the two values from the Spotify dashboard.
+    - Do not share that file, and do not put it in git.
+
+4. Download. Paste the Spotify link as-is, and name the folder where songs should go:
+
+    ```bash
+    spotdl --output ~/Music/songs "https://open.spotify.com/album/xxxxxxxx?si=xxxxxxxx"
+    ```
+
+    The first run downloads a small helper and starts it for you. You do not open a second terminal. The helper closes itself about 5 minutes after the download finishes. If the download stops, run the same command again. Songs already in the folder are skipped.
+
+    Prefer a window instead of Terminal:
+
+    ```bash
+    spotdl easy
+    ```
+
+    A page opens on this computer only. Paste the link, pick the folder, and press Download. Quit closes the page, and the page also closes itself 10 minutes after a download. The red button in the corner does the same thing.
+
+If YouTube says you must sign in, export cookies once and save the file as `~/.spotdl/cookies.txt`. The next command picks it up. Use a throwaway Google account if you can. Details are in [docs/local-setup.md](docs/local-setup.md).
+
 ## Installation
 
 Refer to our [Installation Guide](docs/installation.md) for more details.
@@ -106,7 +155,7 @@ If you want to install Deno system-wide instead, follow the
 
 Large playlists need your own Spotify app, Node.js 20 or newer, and a YouTube cookie file.
 spotdl passes `--js-runtimes node` when `node` is on PATH, skips files that are already on disk,
-and starts the PO-token server on `127.0.0.1:4416` if it is not already running.
+and starts the PO-token server on `127.0.0.1:4416` if it is not already running. That helper closes itself about 5 minutes after spotdl exits.
 
 `spotdl easy` opens a one-page local site for the same download path.
 

@@ -383,7 +383,12 @@ def parse_output_options(parser: _ArgumentGroup):
     parser.add_argument(
         "--output",
         type=str,
-        help=f"Specify the downloaded file name format, available variables: {', '.join(VARS)}",
+        help=(
+            "Folder to save songs in, or a file name template. "
+            "A plain folder such as ~/Music/songs is created if needed. "
+            f"Template variables: {', '.join(VARS)}. "
+            "Text after ? in a Spotify link, such as ?si=, is ignored."
+        ),
     )
 
     # Add m3u argument
@@ -871,5 +876,6 @@ def parse_arguments() -> Namespace:
     # Create parser
     parser = create_parser()
 
-    # Parse arguments
-    return parser.parse_args()
+    # Flags may appear before the Spotify link. The operation is optional, so the
+    # default parser stops at the first flag and then rejects the link.
+    return parser.parse_intermixed_args()

@@ -14,6 +14,8 @@ from spotdl.utils.po_token import (
     ensure_po_token_server,
     po_token_warning_message,
     prepare_pot_server_dir,
+    should_stop_idle_server,
+    stop_po_token_server,
 )
 from spotdl.utils.spotify import SpotifyError
 
@@ -81,14 +83,15 @@ def test_ensure_po_token_server_spawns_node(monkeypatch, tmp_path, caplog):
         probes["count"] += 1
         return probes["count"] > 1
 
-    spawned = {}
+    spawned = {"cmds": []}
 
     class FakePopen:
         def __init__(self, cmd, **kwargs):
-            spawned["cmd"] = cmd
-            spawned["cwd"] = kwargs.get("cwd")
+            self.pid = 4242
+            spawned["cmds"].append((cmd, kwargs.get("cwd")))
 
     monkeypatch.delenv("SPOTDL_NO_POT_SERVER", raising=False)
+    monkeypatch.setattr("spotdl.utils.po_token.get_spotdl_path", lambda: tmp_path)
     monkeypatch.setattr("spotdl.utils.po_token.pot_server_listening", listening)
     monkeypatch.setattr("spotdl.utils.po_token.node_major_version", lambda: 22)
     monkeypatch.setattr("spotdl.utils.po_token.bgutil_http_installed", lambda: True)
@@ -107,9 +110,12 @@ def test_ensure_po_token_server_spawns_node(monkeypatch, tmp_path, caplog):
     with caplog.at_level(logging.INFO):
         assert ensure_po_token_server() is True
 
-    assert spawned["cmd"][0].endswith("node")
-    assert spawned["cmd"][1:] == ["build/main.js"]
-    assert spawned["cwd"] == server_dir
+    node_cmd, node_cwd = next(
+        item for item in spawned["cmds"] if item[0][1:] == ["build/main.js"]
+    )
+    assert node_cmd[0].endswith("node")
+    assert node_cwd == server_dir
+    assert (tmp_path / "pot-server.pid").read_text(encoding="utf-8") == "4242"
 
 
 def test_ensure_po_token_server_skips_when_opted_out(monkeypatch):
@@ -132,3 +138,39 @@ def test_ensure_po_token_server_reports_missing_node(monkeypatch, caplog):
         assert ensure_po_token_server() is False
 
     assert "Node.js >= 20" in caplog.text
+
+
+def test_owned_server_stops_after_clients_exit():
+    assert should_stop_idle_server(0, 300) is True
+    assert should_stop_idle_server(1, 300) is False
+    assert should_stop_idle_server(0, 10) is False
+
+
+def test_stop_po_token_server_signals_only_the_process_spotdl_started(
+    monkeypatch, tmp_path
+):
+    (tmp_path / "pot-server.pid").write_text("4321", encoding="utf-8")
+    monkeypatch.setattr("spotdl.utils.po_token.get_spotdl_path", lambda: tmp_path)
+    monkeypatch.setattr("spotdl.utils.po_token.pid_alive", lambda pid: pid == 4321)
+    signaled = {}
+
+    def _kill(pid, sig):
+        signaled["pid"] = pid
+        signaled["sig"] = sig
+
+    monkeypatch.setattr("spotdl.utils.po_token.os.kill", _kill)
+
+    assert stop_po_token_server() is True
+    assert signaled["pid"] == 4321
+    assert not (tmp_path / "pot-server.pid").exists()
+
+
+def test_stop_po_token_server_leaves_an_unknown_server(monkeypatch, tmp_path):
+    monkeypatch.setattr("spotdl.utils.po_token.get_spotdl_path", lambda: tmp_path)
+
+    def _kill(*_args):
+        raise AssertionError("should not signal a server spotdl did not start")
+
+    monkeypatch.setattr("spotdl.utils.po_token.os.kill", _kill)
+
+    assert stop_po_token_server() is False

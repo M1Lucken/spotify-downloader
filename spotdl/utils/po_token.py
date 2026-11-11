@@ -2,20 +2,25 @@
 Start the bgutil HTTP PO-token server when a download needs it.
 
 The server listens on 127.0.0.1:4416. spotdl reuses a server that is already
-running. Otherwise it builds one with Node and leaves it running for later
-downloads. Set SPOTDL_NO_POT_SERVER=1 to skip that. Set SPOTDL_POT_SERVER to
-a checkout of bgutil-ytdlp-pot-provider (the repo or its server directory).
+running. Otherwise it builds one with Node. A server spotdl started closes
+itself a few minutes after the last spotdl process exits. A server the user
+started (Docker, for example) is left alone. Set SPOTDL_NO_POT_SERVER=1 to
+skip auto-start. Set SPOTDL_POT_SERVER to a checkout of
+bgutil-ytdlp-pot-provider (the repo or its server directory).
 """
 
+import atexit
 import importlib.util
 import logging
 import os
 import shutil
+import signal
 import socket
 import subprocess
+import sys
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from spotdl.utils.config import get_spotdl_path
 from spotdl.utils.js_runtime import node_major_version
@@ -27,16 +32,83 @@ __all__ = [
     "POT_PORT",
     "POT_REF",
     "POT_REPO",
+    "POT_IDLE_SECONDS",
     "bgutil_http_installed",
     "pot_server_listening",
     "po_token_warning_message",
     "ensure_po_token_server",
+    "helper_status",
+    "read_owned_pid",
+    "register_po_token_client",
+    "should_stop_idle_server",
+    "stop_po_token_server",
 ]
 
 POT_HOST = "127.0.0.1"
 POT_PORT = 4416
 POT_REF = "1.3.1"
 POT_REPO = "https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git"
+POT_IDLE_SECONDS = 300
+
+_WATCHDOG = """
+import os
+import signal
+import sys
+import time
+from pathlib import Path
+
+server_pid = int(sys.argv[1])
+pid_path = Path(sys.argv[2])
+clients = Path(sys.argv[3])
+watchdog_path = Path(sys.argv[4])
+idle = float(sys.argv[5])
+last_busy = time.time()
+
+
+def alive(pid):
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def living_clients():
+    count = 0
+    if not clients.is_dir():
+        return 0
+    for marker in list(clients.iterdir()):
+        try:
+            client_pid = int(marker.name)
+        except ValueError:
+            marker.unlink(missing_ok=True)
+            continue
+        if alive(client_pid):
+            count += 1
+        else:
+            marker.unlink(missing_ok=True)
+    return count
+
+
+while alive(server_pid):
+    time.sleep(5)
+    if living_clients():
+        last_busy = time.time()
+        continue
+    if time.time() - last_busy >= idle:
+        try:
+            os.kill(server_pid, signal.SIGTERM)
+        except OSError:
+            pass
+        break
+
+pid_path.unlink(missing_ok=True)
+watchdog_path.unlink(missing_ok=True)
+"""
+
+_client_registered = False
 
 
 def bgutil_http_installed() -> bool:
@@ -84,6 +156,193 @@ def pot_log_path() -> Path:
     return get_spotdl_path() / "pot-server.log"
 
 
+def pot_pid_path() -> Path:
+    """
+    Pid file for the PO-token server spotdl started.
+
+    ### Returns
+    - Path under the spotdl config directory.
+    """
+
+    return get_spotdl_path() / "pot-server.pid"
+
+
+def pot_clients_dir() -> Path:
+    """
+    Directory of pid markers for spotdl processes using the server.
+
+    ### Returns
+    - Path under the spotdl config directory.
+    """
+
+    return get_spotdl_path() / "pot-clients"
+
+
+def pot_watchdog_pid_path() -> Path:
+    """
+    Pid file for the idle-shutdown watcher.
+
+    ### Returns
+    - Path under the spotdl config directory.
+    """
+
+    return get_spotdl_path() / "pot-server.watchdog.pid"
+
+
+def pid_alive(pid: int) -> bool:
+    """
+    Return True when a process id is running.
+
+    ### Arguments
+    - pid: Process id.
+
+    ### Returns
+    - True when the process accepts signal 0.
+    """
+
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _read_pid_file(path: Path) -> Optional[int]:
+    """
+    Read a pid file and drop it when the process is gone.
+    """
+
+    if not path.is_file():
+        return None
+    try:
+        pid = int(path.read_text(encoding="utf-8").strip())
+    except ValueError:
+        path.unlink(missing_ok=True)
+        return None
+    if not pid_alive(pid):
+        path.unlink(missing_ok=True)
+        return None
+    return pid
+
+
+def read_owned_pid() -> Optional[int]:
+    """
+    Return the pid of the PO-token server spotdl started, when it is still running.
+
+    ### Returns
+    - Process id, or None when spotdl did not start the current server.
+    """
+
+    return _read_pid_file(pot_pid_path())
+
+
+def should_stop_idle_server(
+    living_clients: int, idle_for: float, idle_limit: float = POT_IDLE_SECONDS
+) -> bool:
+    """
+    Decide whether an idle PO-token server should be stopped.
+
+    ### Arguments
+    - living_clients: spotdl processes still using the server.
+    - idle_for: Seconds since the last client exited.
+    - idle_limit: Seconds to wait after the last client.
+
+    ### Returns
+    - True when no client is alive and the idle limit has elapsed.
+    """
+
+    return living_clients == 0 and idle_for >= idle_limit
+
+
+def register_po_token_client() -> None:
+    """
+    Remember this process so the idle watcher keeps the server up.
+    """
+
+    global _client_registered  # pylint: disable=global-statement
+
+    directory = pot_clients_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    marker = directory / str(os.getpid())
+    marker.write_text("1", encoding="utf-8")
+    if _client_registered:
+        return
+    _client_registered = True
+
+    def _cleanup() -> None:
+        marker.unlink(missing_ok=True)
+
+    atexit.register(_cleanup)
+
+
+def stop_po_token_server() -> bool:
+    """
+    Stop the PO-token server spotdl started.
+
+    ### Returns
+    - True when a process spotdl started was asked to exit.
+      A server spotdl did not start is left running, and this returns False.
+    """
+
+    pid = read_owned_pid()
+    if pid is None:
+        return False
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        pass
+    pot_pid_path().unlink(missing_ok=True)
+    return True
+
+
+def helper_status() -> Dict[str, object]:
+    """
+    Status of the background PO-token server for the easy page.
+
+    ### Returns
+    - Whether something is listening, whether spotdl started it, and the idle timeout.
+    """
+
+    return {
+        "helper_running": pot_server_listening(),
+        "helper_owned": read_owned_pid() is not None,
+        "helper_idle_seconds": POT_IDLE_SECONDS,
+    }
+
+
+def start_idle_watchdog(server_pid: int) -> None:
+    """
+    Start a detached watcher that stops the server after it has been idle.
+
+    ### Arguments
+    - server_pid: Pid of the Node server spotdl started.
+    """
+
+    if _read_pid_file(pot_watchdog_pid_path()) is not None:
+        return
+
+    config_dir = get_spotdl_path()
+    config_dir.mkdir(parents=True, exist_ok=True)
+    process = subprocess.Popen(  # pylint: disable=consider-using-with
+        [
+            sys.executable,
+            "-c",
+            _WATCHDOG,
+            str(server_pid),
+            str(pot_pid_path()),
+            str(pot_clients_dir()),
+            str(pot_watchdog_pid_path()),
+            str(POT_IDLE_SECONDS),
+        ],
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    pot_watchdog_pid_path().write_text(str(process.pid), encoding="utf-8")
+
+
 def po_token_warning_message() -> Optional[str]:
     """
     Explain that spotdl will start the PO-token server, when it is not up yet.
@@ -95,11 +354,13 @@ def po_token_warning_message() -> Optional[str]:
     if os.environ.get("SPOTDL_NO_POT_SERVER") == "1" or pot_server_listening():
         return None
 
+    minutes = POT_IDLE_SECONDS // 60
     return (
         "The PO-token server is not running. spotdl will start it on "
         f"http://{POT_HOST}:{POT_PORT} when a download starts. The first run clones "
         f"bgutil-ytdlp-pot-provider {POT_REF}, then runs npm ci, npx tsc, and "
         "node build/main.js. Node.js >= 20 and git are required. "
+        f"The server closes itself {minutes} minutes after spotdl exits. "
         "Set SPOTDL_NO_POT_SERVER=1 to skip this, or SPOTDL_POT_SERVER to an "
         "existing checkout."
     )
@@ -238,7 +499,7 @@ def build_pot_server(server_dir: Path) -> bool:
     return True
 
 
-def spawn_pot_server(server_dir: Path) -> bool:
+def spawn_pot_server(server_dir: Path) -> Optional[int]:
     """
     Launch `node build/main.js` in the background.
 
@@ -246,19 +507,19 @@ def spawn_pot_server(server_dir: Path) -> bool:
     - server_dir: Directory that contains build/main.js.
 
     ### Returns
-    - True when the process was spawned.
+    - Pid of the Node process, or None when it could not be started.
     """
 
     node = shutil.which("node")
     if node is None:
         logger.error("node is not on PATH.")
-        return False
+        return None
 
     log_path = pot_log_path()
     logger.info("Starting PO-token server. Log: %s", log_path)
     log_file = open(log_path, "ab")  # pylint: disable=consider-using-with
     try:
-        subprocess.Popen(  # pylint: disable=consider-using-with
+        process = subprocess.Popen(  # pylint: disable=consider-using-with
             [node, "build/main.js"],
             cwd=server_dir,
             stdout=log_file,
@@ -267,11 +528,14 @@ def spawn_pot_server(server_dir: Path) -> bool:
         )
     except OSError as exc:
         logger.error("Could not start the PO-token server: %s", exc)
-        return False
+        return None
     finally:
         log_file.close()
 
-    return True
+    pid_path = pot_pid_path()
+    pid_path.parent.mkdir(parents=True, exist_ok=True)
+    pid_path.write_text(str(process.pid), encoding="utf-8")
+    return process.pid
 
 
 def wait_for_pot_server(timeout: float = 20.0) -> bool:
@@ -310,6 +574,10 @@ def ensure_po_token_server() -> bool:
         return True
 
     if pot_server_listening():
+        owned = read_owned_pid()
+        if owned is not None:
+            register_po_token_client()
+            start_idle_watchdog(owned)
         logger.info("PO-token server already listening on %s:%s", POT_HOST, POT_PORT)
         return True
 
@@ -336,11 +604,21 @@ def ensure_po_token_server() -> bool:
         return False
     if not build_pot_server(server_dir):
         return False
-    if not spawn_pot_server(server_dir):
+    server_pid = spawn_pot_server(server_dir)
+    if server_pid is None:
         return False
+    register_po_token_client()
+    start_idle_watchdog(server_pid)
     if wait_for_pot_server():
-        logger.info("PO-token server is listening on http://%s:%s", POT_HOST, POT_PORT)
+        logger.info(
+            "PO-token server is listening on http://%s:%s. "
+            "It closes itself %s minutes after spotdl exits.",
+            POT_HOST,
+            POT_PORT,
+            POT_IDLE_SECONDS // 60,
+        )
         return True
+    stop_po_token_server()
 
     logger.error(
         "PO-token server did not open %s:%s. See %s",

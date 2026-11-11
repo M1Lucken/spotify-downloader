@@ -5,7 +5,7 @@ Tests for playlist resume and the easy page setup copy.
 from pathlib import Path
 
 from spotdl.console.download import download_songs_with_resume, log_download_summary
-from spotdl.console.easy import COOKIE_HELP, PAGE, setup_status
+from spotdl.console.easy import COOKIE_HELP, PAGE, setup_status, should_close_easy
 from spotdl.utils.credentials import SHARED_SPOTIFY_CLIENT_ID
 
 
@@ -83,9 +83,55 @@ def test_summary_lists_skipped_and_failed(caplog):
 
 def test_easy_page_renders_the_form():
     assert "Save songs to" in PAGE
-    assert "Start" in PAGE
+    assert "Download" in PAGE
+    assert "Quit" in PAGE
+    assert "Stop helper" in PAGE
+    assert "Keep open" in PAGE
     assert 'id="log"' in PAGE
     assert "320k" in PAGE
+
+
+def test_easy_stays_open_during_a_download_and_closes_after_idle():
+    assert (
+        should_close_easy(
+            running=True,
+            finished_at=None,
+            keep_until=0,
+            last_request=0,
+            now=10_000,
+        )
+        is False
+    )
+    assert (
+        should_close_easy(
+            running=False,
+            finished_at=100,
+            keep_until=0,
+            last_request=100,
+            now=100 + 10 * 60,
+        )
+        is True
+    )
+    assert (
+        should_close_easy(
+            running=False,
+            finished_at=100,
+            keep_until=100 + 20 * 60,
+            last_request=100,
+            now=100 + 10 * 60,
+        )
+        is False
+    )
+    assert (
+        should_close_easy(
+            running=False,
+            finished_at=None,
+            keep_until=0,
+            last_request=0,
+            now=15 * 60,
+        )
+        is True
+    )
 
 
 def test_easy_setup_explains_missing_credentials(monkeypatch):

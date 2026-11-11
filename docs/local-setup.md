@@ -1,11 +1,14 @@
 # Local setup
 
-This is the path that downloads a large playlist on a new machine. Commands match this
-checkout. You do not need a separate shell script to start the PO-token server or to pass a
-JavaScript runtime: `spotdl download` and `spotdl easy` do that.
+Do this once. After it, downloading is one command. You can paste a Spotify link that ends in `?si=...`. That extra text is removed for you.
 
-You are responsible for what you download. Do not commit cookies, Spotify client secrets, or
-`.spotipy` token caches.
+```bash
+spotdl --output ~/Music/songs "https://open.spotify.com/album/xxxxxxxx?si=xxxxxxxx"
+```
+
+Songs are saved inside that folder. `spotdl easy` opens the same thing as a window. The first run starts the YouTube helper on its own.
+
+You are responsible for what you download. Do not commit cookies, Spotify client secrets, or `.spotipy` token caches.
 
 ## 1. Requirements
 
@@ -86,8 +89,11 @@ download` and `spotdl easy`:
 4. Run `npm ci` and `npx tsc` in `server/` if `build/main.js` is missing.
 5. Run `node build/main.js` and wait until port 4416 accepts connections.
 
-The server keeps running after spotdl exits. The next download sees the open port and does not
-start a second copy. Output goes to `pot-server.log` in the spotdl config folder.
+The server stays up while spotdl is running. About 5 minutes after the last spotdl process
+exits, it closes itself, so you do not have to quit Node by hand. The next download starts it
+again when the port is closed. In `spotdl easy`, Quit closes the page and that helper, and
+Stop helper closes only the helper. A server you started yourself, such as Docker, is left
+alone. Output goes to `pot-server.log` in the spotdl config folder.
 
 To build and start it yourself instead:
 

@@ -6,9 +6,10 @@ import logging
 import re
 import sys
 import threading
+import time
 import webbrowser
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
@@ -25,25 +26,28 @@ from spotdl.utils.js_runtime import MISSING_JS_RUNTIME_HINT, describe_js_runtime
 from spotdl.utils.po_token import (
     bgutil_http_installed,
     ensure_po_token_server,
+    helper_status,
     po_token_warning_message,
+    stop_po_token_server,
 )
-from spotdl.utils.search import get_simple_songs
+from spotdl.utils.search import get_simple_songs, sanitize_spotify_url
 from spotdl.utils.spotify import SpotifyClient, SpotifyError
 
-__all__ = ["easy", "create_app", "setup_status"]
+__all__ = ["easy", "create_app", "setup_status", "should_close_easy"]
 
 logger = logging.getLogger(__name__)
 
 EASY_PORT = 8810
+EASY_IDLE_SECONDS = 10 * 60
+EASY_ABANDONED_SECONDS = 15 * 60
 BITRATE_RE = re.compile(r"^(auto|disable|\d+k)$")
 COOKIE_HELP = (
-    "YouTube cookies are not set. In a private window, sign in to YouTube, open only "
-    "https://www.youtube.com/robots.txt, then export youtube.com cookies as a Netscape "
-    "cookies.txt. Save that file somewhere outside this git repo and paste its path below. "
-    "A throwaway Google account is safer than a personal one; a personal account can be "
-    "restricted. Do not commit the cookie file. "
-    "Steps: https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies "
-    "and https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp"
+    "YouTube cookies are optional until a song says you must sign in. "
+    "If that happens: open a private window, sign in to YouTube, open only "
+    "https://www.youtube.com/robots.txt, and export the cookies as cookies.txt. "
+    "Save that file as the cookies.txt inside your spotdl settings folder "
+    "(the same folder as config.json). A throwaway Google account is safer. "
+    "Do not commit the file."
 )
 FFMPEG_HELP = (
     "FFmpeg is not installed. Run `spotdl --download-ffmpeg`, or install ffmpeg "
@@ -63,93 +67,239 @@ PAGE = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>spotdl</title>
 <style>
-  :root { color-scheme: light dark; }
-  body {
-    font-family: ui-sans-serif, system-ui, sans-serif;
-    margin: 0 auto;
-    max-width: 42rem;
-    padding: 1.25rem;
-    line-height: 1.45;
-  }
-  h1 { font-size: 1.4rem; margin: 0 0 0.25rem; }
-  p.lead { margin-top: 0; }
-  label { display: block; font-weight: 600; margin-top: 0.8rem; }
-  input, select, button {
-    font: inherit;
-    width: 100%;
-    box-sizing: border-box;
-    margin-top: 0.25rem;
-  }
-  input, select { padding: 0.4rem 0.5rem; }
-  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
-  button {
-    margin-top: 1rem;
-    padding: 0.55rem 0.8rem;
-    font-weight: 650;
-    cursor: pointer;
-  }
-  button:disabled { cursor: not-allowed; opacity: 0.55; }
-  .banner {
-    border: 1px solid #b45309;
-    background: #fff7ed;
-    color: #431407;
-    padding: 0.75rem;
-    margin: 0.75rem 0;
-    white-space: pre-wrap;
+  :root {
+    color-scheme: light;
+    --desktop: #d8d8de;
+    --window: rgba(246, 246, 248, 0.92);
+    --titlebar: rgba(236, 236, 240, 0.9);
+    --ink: #1d1d1f;
+    --muted: #6e6e73;
+    --line: rgba(0, 0, 0, 0.08);
+    --field: #fff;
+    --accent: #0071e3;
+    --accent-press: #0062c4;
+    --shadow: 0 30px 70px rgba(0, 0, 0, 0.18);
+    --banner: #fff8eb;
+    --banner-ink: #6b4e16;
+    --ok: #1d7a3a;
+    --bad: #c41818;
+    --skip: #9a6700;
   }
   @media (prefers-color-scheme: dark) {
-    .banner { background: #431407; color: #ffedd5; border-color: #c2410c; }
+    :root {
+      color-scheme: dark;
+      --desktop: #1c1c1e;
+      --window: rgba(44, 44, 46, 0.92);
+      --titlebar: rgba(58, 58, 60, 0.92);
+      --ink: #f5f5f7;
+      --muted: #a1a1a6;
+      --line: rgba(255, 255, 255, 0.1);
+      --field: #1c1c1e;
+      --accent: #0a84ff;
+      --accent-press: #409cff;
+      --shadow: 0 30px 70px rgba(0, 0, 0, 0.45);
+      --banner: rgba(255, 214, 10, 0.12);
+      --banner-ink: #ffe08a;
+      --ok: #30d158;
+      --bad: #ff453a;
+      --skip: #ffd60a;
+    }
   }
-  table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
-  th, td { text-align: left; padding: 0.3rem 0.2rem; border-bottom: 1px solid #8884; vertical-align: top; }
-  #log {
-    height: 12rem;
-    overflow: auto;
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: grid;
+    place-items: center;
+    padding: 32px 16px;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+    color: var(--ink);
+    background:
+      radial-gradient(1200px 500px at 50% -10%, rgba(255,255,255,0.45), transparent 60%),
+      var(--desktop);
+  }
+  .window {
+    width: min(640px, 100%);
+    border-radius: 18px;
+    overflow: hidden;
+    background: var(--window);
+    backdrop-filter: blur(24px);
+    box-shadow: var(--shadow);
+    border: 1px solid rgba(255, 255, 255, 0.35);
+  }
+  header {
+    display: flex;
+    gap: 14px;
+    align-items: center;
+    padding: 14px 18px 12px;
+    background: var(--titlebar);
+    border-bottom: 1px solid var(--line);
+  }
+  .lights { display: flex; gap: 6px; }
+  .light {
+    width: 12px; height: 12px; border-radius: 50%; display: block; padding: 0;
+  }
+  button.light { border: 0; cursor: pointer; min-width: 0; }
+  button.light:disabled { opacity: 1; }
+  .light.close { background: #ff5f57; }
+  .light.close:hover { background: #e0443e; }
+  .light.minimize { background: #febc2e; }
+  .light.zoom { background: #28c840; }
+  h1 { font-size: 15px; font-weight: 650; margin: 0; letter-spacing: -0.02em; }
+  .lead { margin: 1px 0 0; color: var(--muted); font-size: 12px; }
+  .body { padding: 18px; }
+  label {
+    display: block;
+    margin: 14px 0 6px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--muted);
+  }
+  input, select {
+    width: 100%;
+    font: inherit;
+    font-size: 14px;
+    color: var(--ink);
+    background: var(--field);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 9px 12px;
+    outline: none;
+  }
+  input:focus, select:focus { box-shadow: 0 0 0 4px rgba(0, 113, 227, 0.18); }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .actions { display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-top: 16px; }
+  .note { margin: 14px 0 0; color: var(--muted); font-size: 12px; line-height: 1.4; min-height: 1.4em; }
+  button {
+    font: inherit;
+    font-size: 14px;
+    font-weight: 600;
+    color: white;
+    background: var(--accent);
+    border: 0;
+    border-radius: 10px;
+    padding: 9px 18px;
+    min-width: 128px;
+    cursor: pointer;
+  }
+  button.secondary {
+    color: var(--ink);
+    background: transparent;
+    border: 1px solid var(--line);
+    min-width: 0;
+  }
+  button:hover { background: var(--accent-press); }
+  button.secondary:hover { background: rgba(120, 120, 128, 0.12); }
+  button:disabled { opacity: 0.45; cursor: default; }
+  .lights button.light {
+    min-width: 12px;
+    width: 12px;
+    height: 12px;
+    padding: 0;
+  }
+  .banner {
+    background: var(--banner);
+    color: var(--banner-ink);
+    border-radius: 12px;
+    padding: 12px 14px;
+    margin-bottom: 10px;
+    font-size: 13px;
+    line-height: 1.45;
     white-space: pre-wrap;
-    font-family: ui-monospace, monospace;
-    font-size: 0.82rem;
-    border: 1px solid #8884;
-    padding: 0.5rem;
-    margin-top: 0.75rem;
   }
-  .status-done { color: #15803d; }
-  .status-error, .status-no-match { color: #b91c1c; }
-  .status-skipped { color: #a16207; }
+  h2 {
+    margin: 22px 0 8px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  table { width: 100%; border-collapse: collapse; }
+  th { display: none; }
+  td { padding: 8px 0; border-bottom: 1px solid var(--line); vertical-align: middle; font-size: 14px; }
+  td:last-child { text-align: right; white-space: nowrap; }
+  .pill {
+    display: inline-block;
+    border-radius: 999px;
+    padding: 2px 8px;
+    font-size: 12px;
+    font-weight: 600;
+    background: rgba(120, 120, 128, 0.16);
+  }
+  .status-done { color: var(--ok); background: color-mix(in srgb, var(--ok) 16%, transparent); }
+  .status-error, .status-no-match { color: var(--bad); background: color-mix(in srgb, var(--bad) 14%, transparent); }
+  .status-skipped { color: var(--skip); background: color-mix(in srgb, var(--skip) 16%, transparent); }
+  #log {
+    height: 9.5rem;
+    overflow: auto;
+    margin: 0;
+    padding: 12px;
+    border-radius: 12px;
+    background: var(--field);
+    border: 1px solid var(--line);
+    color: var(--muted);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 12px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+  }
 </style>
 </head>
 <body>
-  <h1>spotdl</h1>
-  <p class="lead">Download a Spotify song, playlist, album, or artist. This page stays on this computer.</p>
-  <div id="setup"></div>
-  <form id="form">
-    <label for="output_dir">Save songs to</label>
-    <input id="output_dir" name="output_dir" required>
-    <label for="url">Spotify or YouTube Music link</label>
-    <input id="url" name="url" placeholder="https://open.spotify.com/playlist/..." required>
-    <div class="row">
-      <div>
-        <label for="bitrate">Bitrate</label>
-        <select id="bitrate" name="bitrate">
-          <option value="128k">128k</option>
-          <option value="192k">192k</option>
-          <option value="256k">256k</option>
-          <option value="320k" selected>320k</option>
-        </select>
+  <main class="window">
+    <header>
+      <div class="lights">
+        <button type="button" id="quit" class="light close" title="Quit" aria-label="Quit"></button>
+        <i class="light minimize"></i>
+        <i class="light zoom"></i>
       </div>
       <div>
-        <label for="threads">Threads</label>
-        <input id="threads" name="threads" type="number" min="1" max="16" value="1">
+        <h1>spotdl</h1>
+        <p class="lead">Paste a Spotify link. The extra ?si= text is ignored. Songs stay on this Mac.</p>
       </div>
+    </header>
+    <div class="body">
+      <div id="setup"></div>
+      <form id="form">
+        <label for="output_dir">Save songs to</label>
+        <input id="output_dir" name="output_dir" required>
+        <label for="url">Spotify link</label>
+        <input id="url" name="url" placeholder="https://open.spotify.com/album/..." required>
+        <div class="row">
+          <div>
+            <label for="bitrate">Bitrate</label>
+            <select id="bitrate" name="bitrate">
+              <option value="128k">128k</option>
+              <option value="192k">192k</option>
+              <option value="256k">256k</option>
+              <option value="320k" selected>320k</option>
+            </select>
+          </div>
+          <div>
+            <label for="threads">Threads</label>
+            <input id="threads" name="threads" type="number" min="1" max="16" value="1">
+          </div>
+        </div>
+        <label for="cookie_file">YouTube cookies, if you have them</label>
+        <input id="cookie_file" name="cookie_file" placeholder="Leave blank unless YouTube asks you to sign in">
+        <p class="note" id="helper-note"></p>
+        <div class="actions">
+          <button type="button" id="keep-open" class="secondary" hidden>Keep open</button>
+          <button type="button" id="stop-helper" class="secondary" hidden>Stop helper</button>
+          <button type="button" id="quit-text" class="secondary">Quit</button>
+          <button id="start" type="submit">Download</button>
+        </div>
+      </form>
+      <h2>Songs</h2>
+      <table>
+        <thead><tr><th>Song</th><th>Status</th></tr></thead>
+        <tbody id="songs"></tbody>
+      </table>
+      <h2>Log</h2>
+      <div id="log" aria-live="polite"></div>
     </div>
-    <label for="cookie_file">YouTube cookies.txt</label>
-    <input id="cookie_file" name="cookie_file" placeholder="/path/to/cookies.txt">
-    <button id="start" type="submit">Start</button>
-  </form>
-  <table>
-    <thead><tr><th>Song</th><th>Status</th></tr></thead>
-    <tbody id="songs"></tbody>
-  </table>
-  <div id="log" aria-live="polite"></div>
+  </main>
 <script>
 const outputDir = document.getElementById("output_dir");
 const cookieFile = document.getElementById("cookie_file");
@@ -158,6 +308,9 @@ const songs = document.getElementById("songs");
 const log = document.getElementById("log");
 const start = document.getElementById("start");
 const form = document.getElementById("form");
+const helperNote = document.getElementById("helper-note");
+const stopHelper = document.getElementById("stop-helper");
+const keepOpen = document.getElementById("keep-open");
 
 function banner(text) {
   const box = document.createElement("div");
@@ -173,16 +326,31 @@ async function refresh() {
   if (!cookieFile.value && data.cookie_file) cookieFile.value = data.cookie_file;
   setup.replaceChildren();
   for (const message of data.messages) setup.appendChild(banner(message));
-  start.disabled = data.running || !data.credentials_ok || !data.ffmpeg_ok || !data.js_runtime || !cookieFile.value.trim();
+  start.disabled = data.running || !data.credentials_ok || !data.ffmpeg_ok || !data.js_runtime;
+  stopHelper.hidden = !data.helper_owned;
+  keepOpen.hidden = data.closing_in == null;
+  if (data.closing_in != null) {
+    const minutes = Math.max(1, Math.ceil(data.closing_in / 60));
+    helperNote.textContent = "This window closes in " + minutes + " minute" + (minutes === 1 ? "" : "s") + ". The background helper closes with it.";
+  } else if (data.helper_owned) {
+    const minutes = Math.round((data.helper_idle_seconds || 300) / 60);
+    helperNote.textContent = "A background helper is running. It closes on its own " + minutes + " minutes after spotdl exits. Stop helper closes it now.";
+  } else if (data.helper_running) {
+    helperNote.textContent = "A helper is already running on this Mac. This window will leave it alone.";
+  } else {
+    helperNote.textContent = "";
+  }
   songs.replaceChildren();
   for (const song of data.songs) {
     const row = document.createElement("tr");
     const name = document.createElement("td");
     const state = document.createElement("td");
+    const pill = document.createElement("span");
     name.textContent = song.name;
-    const label = song.detail && song.status === "error" ? song.status + ": " + song.detail : song.status;
-    state.textContent = label;
-    state.className = "status-" + song.status.replace(" ", "-");
+    pill.textContent = song.status;
+    pill.className = "pill status-" + song.status.replace(" ", "-");
+    pill.title = song.detail || "";
+    state.appendChild(pill);
     row.append(name, state);
     songs.appendChild(row);
   }
@@ -211,6 +379,25 @@ form.addEventListener("submit", async (event) => {
     const message = payload.detail || "Could not start the download.";
     setup.appendChild(banner(typeof message === "string" ? message : JSON.stringify(message)));
   }
+  refresh();
+});
+
+async function quit() {
+  await fetch("/api/quit", {method: "POST"});
+  helperNote.textContent = "Closed. You can close this tab.";
+  start.disabled = true;
+}
+
+document.getElementById("quit").addEventListener("click", quit);
+document.getElementById("quit-text").addEventListener("click", quit);
+stopHelper.addEventListener("click", async () => {
+  stopHelper.disabled = true;
+  await fetch("/api/helper/stop", {method: "POST"});
+  stopHelper.disabled = false;
+  refresh();
+});
+keepOpen.addEventListener("click", async () => {
+  await fetch("/api/keep-open", {method: "POST"});
   refresh();
 });
 
@@ -350,8 +537,104 @@ def _init_spotify(spotify_settings: Dict[str, Any]) -> None:
             raise
 
 
+class EasySession:
+    """
+    Timers for closing the easy page after a download.
+    """
+
+    def __init__(self) -> None:
+        now = time.monotonic()
+        self.finished_at: Optional[float] = None
+        self.keep_until = 0.0
+        self.last_request = now
+        self.on_quit: Optional[Callable[[], None]] = None
+
+
+def should_close_easy(
+    *,
+    running: bool,
+    finished_at: Optional[float],
+    keep_until: float,
+    last_request: float,
+    now: float,
+    idle_seconds: float = EASY_IDLE_SECONDS,
+    abandoned_seconds: float = EASY_ABANDONED_SECONDS,
+) -> bool:
+    """
+    Decide whether the easy page should exit.
+
+    ### Arguments
+    - running: A download is in progress.
+    - finished_at: When the last download finished, or None.
+    - keep_until: Deadline set by Keep open.
+    - last_request: When the browser last asked for status.
+    - now: Current monotonic time.
+    - idle_seconds: How long to stay open after a download.
+    - abandoned_seconds: How long to stay open with the tab closed.
+
+    ### Returns
+    - True when the page and the helper it started should close.
+    """
+
+    if running:
+        return False
+    if now - last_request >= abandoned_seconds:
+        return True
+    if finished_at is None:
+        return False
+    return now >= max(finished_at + idle_seconds, keep_until)
+
+
+def closing_in_seconds(
+    session: EasySession, running: bool, now: float
+) -> Optional[int]:
+    """
+    Seconds until the page closes itself after a download.
+
+    ### Arguments
+    - session: Page timers.
+    - running: A download is in progress.
+    - now: Current monotonic time.
+
+    ### Returns
+    - Remaining seconds, or None when no close is scheduled.
+    """
+
+    if running or session.finished_at is None:
+        return None
+    remaining = max(session.finished_at + EASY_IDLE_SECONDS, session.keep_until) - now
+    if remaining <= 0:
+        return 0
+    return int(remaining)
+
+
+def _watch_easy_server(server: Server, job: DownloadJob, session: EasySession) -> None:
+    """
+    Close the page after it has been idle, and stop the helper spotdl started.
+    """
+
+    while not server.should_exit:
+        time.sleep(5)
+        if server.should_exit:
+            return
+        now = time.monotonic()
+        with job.lock:
+            running = job.running
+        if should_close_easy(
+            running=running,
+            finished_at=session.finished_at,
+            keep_until=session.keep_until,
+            last_request=session.last_request,
+            now=now,
+        ):
+            stop_po_token_server()
+            server.should_exit = True
+            return
+
+
 def _run_download(
     job: DownloadJob,
+    session: EasySession,
     spotify_settings: Dict[str, Any],
     downloader_settings: Dict[str, Any],
     request: DownloadRequest,
@@ -374,7 +657,8 @@ def _run_download(
         settings["threads"] = request.threads
         settings["overwrite"] = "skip"
         settings["simple_tui"] = True
-        settings["cookie_file"] = request.cookie_file
+        if request.cookie_file:
+            settings["cookie_file"] = request.cookie_file
         settings["audio_providers"] = resolve_audio_providers(
             list(settings["audio_providers"])
         )
@@ -407,6 +691,7 @@ def _run_download(
         root.removeHandler(handler)
         with job.lock:
             job.running = False
+        session.finished_at = time.monotonic()
 
 
 def create_app(
@@ -428,6 +713,9 @@ def create_app(
 
     app = FastAPI(title="spotdl easy", docs_url=None, redoc_url=None, openapi_url=None)
     job = DownloadJob()
+    session = EasySession()
+    app.state.job = job
+    app.state.session = session
     default_output = output_dir or str(Path.cwd())
 
     @app.get("/", response_class=HTMLResponse)
@@ -436,11 +724,33 @@ def create_app(
 
     @app.get("/api/status")
     def status() -> Dict[str, Any]:
+        session.last_request = time.monotonic()
         payload = setup_status(spotify_settings, downloader_settings)
         payload.update(job.snapshot())
+        payload.update(helper_status())
+        payload["closing_in"] = closing_in_seconds(
+            session, bool(payload["running"]), time.monotonic()
+        )
         payload["output_dir"] = default_output
         payload["cookie_file"] = downloader_settings.get("cookie_file") or ""
         return payload
+
+    @app.post("/api/helper/stop")
+    def stop_helper() -> Dict[str, bool]:
+        return {"ok": stop_po_token_server()}
+
+    @app.post("/api/keep-open")
+    def keep_open() -> Dict[str, bool]:
+        session.keep_until = time.monotonic() + EASY_IDLE_SECONDS
+        session.last_request = time.monotonic()
+        return {"ok": True}
+
+    @app.post("/api/quit")
+    def quit_app() -> Dict[str, bool]:
+        stop_po_token_server()
+        if session.on_quit is not None:
+            session.on_quit()
+        return {"ok": True}
 
     @app.post("/api/download")
     def start(body: DownloadRequest) -> Dict[str, bool]:
@@ -455,14 +765,20 @@ def create_app(
             raise HTTPException(
                 status_code=400, detail="Bitrate must look like 320k, auto, or disable."
             )
-        cookie_path = Path(body.cookie_file).expanduser()
-        if not body.cookie_file or not cookie_path.is_file():
-            raise HTTPException(status_code=400, detail=COOKIE_HELP)
-        url = body.url.strip()
+        cookie_file = ""
+        if body.cookie_file.strip():
+            cookie_path = Path(body.cookie_file).expanduser()
+            if not cookie_path.is_file():
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Could not find that cookie file: {cookie_path}",
+                )
+            cookie_file = str(cookie_path)
+        url = sanitize_spotify_url(body.url.strip())
         if not url.startswith(("https://", "http://")):
             raise HTTPException(
                 status_code=400,
-                detail="Paste a full https link to a Spotify track, playlist, album, or artist.",
+                detail="Paste a full link, starting with https://",
             )
         with job.lock:
             if job.running:
@@ -473,10 +789,11 @@ def create_app(
             job.songs.clear()
             job.order.clear()
             job.log_lines.clear()
-        body.cookie_file = str(cookie_path)
+        body.cookie_file = cookie_file
+        body.url = url
         threading.Thread(
             target=_run_download,
-            args=(job, spotify_settings, downloader_settings, body),
+            args=(job, session, spotify_settings, downloader_settings, body),
             daemon=True,
         ).start()
         return {"ok": True}
@@ -509,7 +826,26 @@ def easy(
     app = create_app(spotify_settings, downloader_settings)
     config = Config(app=app, host=host, port=port, log_level="info")
     server = Server(config)
+
+    def on_quit() -> None:
+        def _later() -> None:
+            time.sleep(0.2)
+            server.should_exit = True
+
+        threading.Thread(target=_later, daemon=True).start()
+
+    app.state.session.on_quit = on_quit
+    threading.Thread(
+        target=_watch_easy_server,
+        args=(server, app.state.job, app.state.session),
+        daemon=True,
+    ).start()
     url = f"http://{host}:{port}/"
-    logger.info("Easy UI at %s", url)
+    logger.info(
+        "Easy UI at %s. It closes itself %s minutes after a download, "
+        "or when you press Quit.",
+        url,
+        EASY_IDLE_SECONDS // 60,
+    )
     webbrowser.open(url)
     server.run()
